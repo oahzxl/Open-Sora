@@ -5,7 +5,6 @@ import operator
 import os
 from typing import Tuple
 
-import colossalai
 import torch
 import torch.distributed as dist
 import torch.nn as nn
@@ -84,6 +83,7 @@ def load_from_sharded_state_dict(model, ckpt_path):
     ckpt_io = GeneralCheckpointIO()
     ckpt_io.load_model(model, os.path.join(ckpt_path, "model"))
 
+
 def model_sharding(model: torch.nn.Module):
     global_rank = dist.get_rank()
     world_size = dist.get_world_size()
@@ -96,6 +96,19 @@ def model_sharding(model: torch.nn.Module):
         splited_params = padding_param.split(padding_param.numel() // world_size)
         splited_params = splited_params[global_rank]
         param.data = splited_params
+
+
+def split_param(param):
+    global_rank = dist.get_rank()
+    world_size = dist.get_world_size()
+    padding_size = (world_size - param.numel() % world_size) % world_size
+    if padding_size > 0:
+        padding_param = torch.nn.functional.pad(param.data.view(-1), [0, padding_size])
+    else:
+        padding_param = param.data.view(-1)
+    splited_params = padding_param.split(padding_param.numel() // world_size)
+    splited_params = splited_params[global_rank]
+    return splited_params
 
 
 def load_json(file_path: str):

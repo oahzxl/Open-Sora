@@ -1,26 +1,21 @@
+import os
+
+os.environ["TOKENIZERS_PARALLELISM"] = "false"  # disable tokenizers warning
+
 from copy import deepcopy
 
-import colossalai
+import deepspeed
 import torch
 import torch.distributed as dist
 import wandb
-from colossalai.booster import Booster
-from colossalai.booster.plugin import LowLevelZeroPlugin
-from colossalai.cluster import DistCoordinator
-from colossalai.nn.optimizer import HybridAdam
-from colossalai.utils import get_current_device
+from deepspeed.accelerator import get_accelerator
 from tqdm import tqdm
 
 from opensora.acceleration.checkpoint import set_grad_checkpoint
-from opensora.acceleration.parallel_states import (
-    get_data_parallel_group,
-    set_data_parallel_group,
-    set_sequence_parallel_group,
-)
-from opensora.acceleration.plugin import ZeroSeqParallelPlugin
+from opensora.acceleration.parallel_states import get_data_parallel_group, set_data_parallel_group
 from opensora.datasets import DatasetFromCSV, get_transforms_image, get_transforms_video, prepare_dataloader
 from opensora.registry import MODELS, SCHEDULERS, build_module
-from opensora.utils.ckpt_utils import create_logger, load, model_sharding, record_model_param_shape, save
+from opensora.utils.ckpt_utils import create_logger, model_sharding
 from opensora.utils.config_utils import (
     create_experiment_workspace,
     create_tensorboard_writer,
@@ -29,6 +24,10 @@ from opensora.utils.config_utils import (
 )
 from opensora.utils.misc import all_reduce_mean, format_numel_str, get_model_numel, requires_grad, to_torch_dtype
 from opensora.utils.train_utils import update_ema
+
+
+def is_master():
+    return dist.get_rank() == 0
 
 
 def main():
@@ -45,15 +44,18 @@ def main():
     # ======================================================
     assert torch.cuda.is_available(), "Training currently requires at least one GPU."
     assert cfg.dtype in ["fp16", "bf16"], f"Unknown mixed precision {cfg.dtype}"
+    deepspeed.init_distributed()
 
     # 2.1. colossalai init distributed training
-    colossalai.launch_from_torch({})
-    coordinator = DistCoordinator()
-    device = get_current_device()
+    device = (
+        torch.device(get_accelerator().device_name(), cfg.local_rank)
+        if (cfg.local_rank > -1) and get_accelerator().is_available()
+        else torch.device("cpu")
+    )
     dtype = to_torch_dtype(cfg.dtype)
 
     # 2.2. init logger, tensorboard & wandb
-    if not coordinator.is_master():
+    if not is_master():
         logger = create_logger(None)
     else:
         logger = create_logger(exp_dir)
@@ -64,27 +66,7 @@ def main():
             wandb.init(project="minisora", name=exp_name, config=cfg._cfg_dict)
 
     # 2.3. initialize ColossalAI booster
-    if cfg.plugin == "zero2":
-        plugin = LowLevelZeroPlugin(
-            stage=2,
-            precision=cfg.dtype,
-            initial_scale=2**16,
-            max_norm=cfg.grad_clip,
-        )
-        set_data_parallel_group(dist.group.WORLD)
-    elif cfg.plugin == "zero2-seq":
-        plugin = ZeroSeqParallelPlugin(
-            sp_size=cfg.sp_size,
-            stage=2,
-            precision=cfg.dtype,
-            initial_scale=2**16,
-            max_norm=cfg.grad_clip,
-        )
-        set_sequence_parallel_group(plugin.sp_group)
-        set_data_parallel_group(plugin.dp_group)
-    else:
-        raise ValueError(f"Unknown plugin {cfg.plugin}")
-    booster = Booster(plugin=plugin)
+    set_data_parallel_group(dist.group.WORLD)
 
     # ======================================================
     # 3. build dataset and dataloader
@@ -147,7 +129,6 @@ def main():
     # 4.2. create ema
     ema = deepcopy(model).to(torch.float32).to(device)
     requires_grad(ema, False)
-    ema_shape_dict = record_model_param_shape(ema)
 
     # 4.3. move to device
     vae = vae.to(device, dtype)
@@ -155,12 +136,6 @@ def main():
 
     # 4.4. build scheduler
     scheduler = build_module(cfg.scheduler, SCHEDULERS)
-
-    # 4.5. setup optimizer
-    optimizer = HybridAdam(
-        filter(lambda p: p.requires_grad, model.parameters()), lr=cfg.lr, weight_decay=0, adamw_mode=True
-    )
-    lr_scheduler = None
 
     # 4.6. prepare for training
     if cfg.grad_checkpoint:
@@ -172,11 +147,50 @@ def main():
     # =======================================================
     # 5. boost model for distributed training with colossalai
     # =======================================================
-    torch.set_default_dtype(dtype)
-    model, optimizer, _, dataloader, lr_scheduler = booster.boost(
-        model=model, optimizer=optimizer, lr_scheduler=lr_scheduler, dataloader=dataloader
+    ds_config = {
+        "train_batch_size": 2, # total batch size
+        "steps_per_print": 10,
+        "optimizer": {
+            "type": "Adam",
+            "params": {
+                "lr": 2e-5,
+                "betas": [
+                    0.9,
+                    0.999
+                ],
+                "eps": 1e-8,
+                "weight_decay": 0,
+                "adam_w_mode": True,
+            }
+        },
+        "scheduler": {
+            "type": "WarmupLR", #WarmupLR:预热后保持学习率不变    WarmupDecayLR:预热后学习率线性衰减
+            "params": {
+            "warmup_min_lr": 0,
+            "warmup_max_lr": 0.001,
+            "warmup_num_steps": 1000,
+            "warmup_type": "linear" # cosine or linear
+            }
+        },
+        "gradient_clipping": 1.0,
+        "prescale_gradients": False, #是否对梯度进行预缩放
+        "bf16": {
+            "enabled": True,
+        },
+        "zero_optimization": {
+            "stage": 2,
+            "allgather_partitions": True,
+            "reduce_scatter": True,
+            "allgather_bucket_size": 50000000,
+            "reduce_bucket_size": 50000000,
+            "overlap_comm": True,
+            "contiguous_gradients": True,
+        },
+    }  # fmt:skip
+
+    model, _, _, _ = deepspeed.initialize(
+        model=model, model_parameters=filter(lambda p: p.requires_grad, model.parameters()), config=ds_config
     )
-    torch.set_default_dtype(torch.float)
     num_steps_per_epoch = len(dataloader)
     logger.info("Boost model for distributed training")
 
@@ -189,7 +203,7 @@ def main():
     # 6.1. resume training
     if cfg.load is not None:
         logger.info("Loading checkpoint")
-        start_epoch, start_step, sampler_start_idx = load(booster, model, ema, optimizer, lr_scheduler, cfg.load)
+        start_epoch, start_step, sampler_start_idx = None
         logger.info(f"Loaded checkpoint {cfg.load} at epoch {start_epoch} step {start_step}")
     logger.info(f"Training for {cfg.epochs} epochs with {num_steps_per_epoch} steps per epoch")
 
@@ -205,7 +219,7 @@ def main():
         with tqdm(
             range(start_step, num_steps_per_epoch),
             desc=f"Epoch {epoch}",
-            disable=not coordinator.is_master(),
+            disable=not dist.get_rank() == 0,
             total=num_steps_per_epoch,
             initial=start_step,
         ) as pbar:
@@ -226,12 +240,11 @@ def main():
 
                 # Backward & update
                 loss = loss_dict["loss"].mean()
-                booster.backward(loss=loss, optimizer=optimizer)
-                optimizer.step()
-                optimizer.zero_grad()
+                model.backward(loss)
+                model.step()
 
                 # Update EMA
-                update_ema(ema, model.module, optimizer=optimizer)
+                update_ema(ema, model.module)
 
                 # Log loss values:
                 all_reduce_mean(loss)
@@ -240,7 +253,7 @@ def main():
                 log_step += 1
 
                 # Log to tensorboard
-                if coordinator.is_master() and (global_step + 1) % cfg.log_every == 0:
+                if dist.get_rank == 0 and (global_step + 1) % cfg.log_every == 0:
                     avg_loss = running_loss / log_step
                     pbar.set_postfix({"loss": avg_loss, "step": step, "global_step": global_step})
                     running_loss = 0
@@ -260,20 +273,6 @@ def main():
 
                 # Save checkpoint
                 if cfg.ckpt_every > 0 and (global_step + 1) % cfg.ckpt_every == 0:
-                    save(
-                        booster,
-                        model,
-                        ema,
-                        optimizer,
-                        lr_scheduler,
-                        epoch,
-                        step + 1,
-                        global_step + 1,
-                        cfg.batch_size,
-                        coordinator,
-                        exp_dir,
-                        ema_shape_dict,
-                    )
                     logger.info(
                         f"Saved checkpoint at epoch {epoch} step {step + 1} global_step {global_step + 1} to {exp_dir}"
                     )

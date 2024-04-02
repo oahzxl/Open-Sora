@@ -16,6 +16,7 @@ def parse_args(training=False):
     parser.add_argument("--seed", default=42, type=int, help="generation seed")
     parser.add_argument("--ckpt-path", type=str, help="path to model ckpt; will overwrite cfg.ckpt_path if specified")
     parser.add_argument("--batch-size", default=None, type=int, help="batch size")
+    parser.add_argument("--local_rank", required=True, type=int)
 
     # ======================================================
     # Inference
@@ -52,6 +53,7 @@ def merge_args(cfg, args, training=False):
     for k, v in vars(args).items():
         if k in cfg and v is not None:
             cfg[k] = v
+    cfg["local_rank"] = args.local_rank
 
     return cfg
 

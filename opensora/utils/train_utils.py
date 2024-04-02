@@ -2,6 +2,8 @@ from collections import OrderedDict
 
 import torch
 
+from .ckpt_utils import split_param
+
 
 @torch.no_grad()
 def update_ema(
@@ -22,10 +24,5 @@ def update_ema(
             param_data = param.data
             ema_params[name].mul_(decay).add_(param_data, alpha=1 - decay)
         else:
-            if param.data.dtype != torch.float32:
-                param_id = id(param)
-                master_param = optimizer._param_store.working_to_master_param[param_id]
-                param_data = master_param.data
-            else:
-                param_data = param.data
-            ema_params[name].mul_(decay).add_(param_data, alpha=1 - decay)
+            splited_param = split_param(param)
+            ema_params[name].mul_(decay).add_(splited_param, alpha=1 - decay)
