@@ -163,11 +163,11 @@ def masking_function(
 
 
 class WikiTextMLMDataset(Dataset):
-    """A [Map style dataset](https://pytorch.org/docs/stable/data.html)
+    """A [Map style dataset](https:#pytorch.org/docs/stable/data.html)
     for iterating over the wikitext dataset. Note that this assumes
     the dataset can fit in memory. For larger datasets
     you'd want to shard them and use an iterable dataset (eg: see
-    [Infinibatch](https://github.com/microsoft/infinibatch))
+    [Infinibatch](https:#github.com/microsoft/infinibatch))
 
     Args:
         Dataset (datasets.arrow_dataset.Dataset):
@@ -545,7 +545,7 @@ def train(
     local_rank: int = -1,
     dtype: str = "bf16",
 ) -> pathlib.Path:
-    """Trains a [Bert style](https://arxiv.org/pdf/1810.04805.pdf)
+    """Trains a [Bert style](https:#arxiv.org/pdf/1810.04805.pdf)
     (transformer encoder only) model for MLM Task
 
     Args:
@@ -667,16 +667,51 @@ def train(
     log_dist("Creating DeepSpeed engine", ranks=[0], level=logging.INFO)
     assert dtype == "fp16" or dtype == "bf16"
     ds_config = {
-        "train_micro_batch_size_per_gpu": batch_size,
-        "optimizer": {"type": "Adam", "params": {"lr": 1e-4}},
-        dtype: {"enabled": True},
-        "zero_optimization": {
-            "stage": 1,
-            # "offload_optimizer": {
-            #     "device": "cpu"
-            # }
+        "train_batch_size": 16, # total batch size
+        "steps_per_print": 10,
+        "optimizer": {
+            "type": "Adam",
+            "params": {
+            "lr": 0.001,
+            "betas": [
+                0.8,
+                0.999
+            ],
+            "eps": 1e-8,
+            "weight_decay": 3e-7
+            }
         },
-    }
+        "scheduler": {
+            "type": "WarmupLR", #WarmupLR:预热后保持学习率不变    WarmupDecayLR:预热后学习率线性衰减
+            "params": {
+            "warmup_min_lr": 0,
+            "warmup_max_lr": 0.001,
+            "warmup_num_steps": 1000,
+            "warmup_type": "linear" # cosine or linear
+            }
+        },
+        "gradient_clipping": 1.0,
+        "prescale_gradients": False, #是否对梯度进行预缩放
+        "fp16": {
+            "enabled": True,
+            "fp16_master_weights_and_grads": False,
+            "loss_scale": 0,
+            "loss_scale_window": 500,
+            "hysteresis": 2,
+            "min_loss_scale": 1,
+            "initial_scale_power": 15
+        },
+        "zero_optimization": {
+            "stage": 2,
+            "allgather_partitions": True,
+            "reduce_scatter": True,
+            "allgather_bucket_size": 50000000,
+            "reduce_bucket_size": 50000000,
+            "overlap_comm": True,
+            "contiguous_gradients": True,
+        },
+    }  # fmt:skip
+
     model, _, _, _ = deepspeed.initialize(model=model, model_parameters=model.parameters(), config=ds_config)
     log_dist("DeepSpeed engine created", ranks=[0], level=logging.INFO)
     ################################
