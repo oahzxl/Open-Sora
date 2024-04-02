@@ -672,13 +672,14 @@ def train(
         "optimizer": {
             "type": "Adam",
             "params": {
-            "lr": 0.001,
-            "betas": [
-                0.8,
-                0.999
-            ],
-            "eps": 1e-8,
-            "weight_decay": 3e-7
+                "lr": 2e-5,
+                "betas": [
+                    0.9,
+                    0.999
+                ],
+                "eps": 1e-8,
+                "weight_decay": 0,
+                "adam_w_mode": True,
             }
         },
         "scheduler": {
