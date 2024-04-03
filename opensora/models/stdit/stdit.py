@@ -7,15 +7,17 @@ from timm.models.layers import DropPath
 from timm.models.vision_transformer import Mlp
 
 from opensora.acceleration.checkpoint import auto_grad_checkpoint
-from opensora.acceleration.communications import gather_forward_split_backward, split_forward_gather_backward
-from opensora.acceleration.parallel_manager import get_sequence_parallel_group
+from opensora.acceleration.communications import (
+    all_to_all,
+    gather_forward_split_backward,
+    split_forward_gather_backward,
+)
+from opensora.acceleration.parallel_manager import get_sequence_parallel_group, get_sequence_parallel_size
 from opensora.models.layers.blocks import (
     Attention,
     CaptionEmbedder,
     MultiHeadCrossAttention,
     PatchEmbed3D,
-    SeqParallelAttention,
-    SeqParallelMultiHeadCrossAttention,
     T2IFinalLayer,
     TimestepEmbedder,
     approx_gelu,
@@ -46,12 +48,8 @@ class STDiTBlock(nn.Module):
         self.enable_flashattn = enable_flashattn
         self._enable_sequence_parallelism = enable_sequence_parallelism
 
-        if enable_sequence_parallelism:
-            self.attn_cls = SeqParallelAttention
-            self.mha_cls = SeqParallelMultiHeadCrossAttention
-        else:
-            self.attn_cls = Attention
-            self.mha_cls = MultiHeadCrossAttention
+        self.attn_cls = Attention
+        self.mha_cls = MultiHeadCrossAttention
 
         self.norm1 = get_layernorm(hidden_size, eps=1e-6, affine=False, use_kernel=enable_layernorm_kernel)
         self.attn = self.attn_cls(
@@ -71,12 +69,6 @@ class STDiTBlock(nn.Module):
         # temporal attention
         self.d_s = d_s
         self.d_t = d_t
-
-        if self._enable_sequence_parallelism:
-            sp_size = dist.get_world_size(get_sequence_parallel_group())
-            # make sure d_t is divisible by sp_size
-            assert d_t % sp_size == 0
-            self.d_t = d_t // sp_size
 
         self.attn_temp = self.attn_cls(
             hidden_size,
@@ -99,6 +91,11 @@ class STDiTBlock(nn.Module):
         x_s = rearrange(x_s, "(B T) S C -> B (T S) C", T=self.d_t, S=self.d_s)
         x = x + self.drop_path(gate_msa * x_s)
 
+        # temporal to spatial switch
+        if self._enable_sequence_parallelism:
+            # b t/n s d -> b t s/n d
+            x, d_s, d_t = self.dynamic_switch(x, d_s, d_t, temporal_to_spatial=True)
+
         # temporal branch
         x_t = rearrange(x, "B (T S) C -> (B S) T C", T=self.d_t, S=self.d_s)
         if tpe is not None:
@@ -107,6 +104,11 @@ class STDiTBlock(nn.Module):
         x_t = rearrange(x_t, "(B S) T C -> B (T S) C", T=self.d_t, S=self.d_s)
         x = x + self.drop_path(gate_msa * x_t)
 
+        # spatial to temporal switch
+        if self._enable_sequence_parallelism:
+            # b t s/n d -> b t/n s d
+            x, d_s, d_t = self.dynamic_switch(x, d_s, d_t, temporal_to_spatial=False)
+
         # cross attn
         x = x + self.cross_attn(x, y, mask)
 
@@ -114,6 +116,29 @@ class STDiTBlock(nn.Module):
         x = x + self.drop_path(gate_mlp * self.mlp(t2i_modulate(self.norm2(x), shift_mlp, scale_mlp)))
 
         return x
+
+    def get_spatial_temporal_size(self, enable_sequence_parallelism: bool, split_temporal: bool):
+        if enable_sequence_parallelism:
+            if split_temporal:
+                return self.d_s, self.d_t // get_sequence_parallel_size()
+            else:
+                return self.d_s // get_sequence_parallel_size(), self.d_t
+        else:
+            return self.d_s, self.d_t
+
+    def dynamic_switch(self, x, d_s, d_t, temporal_to_spatial: bool):
+        if temporal_to_spatial:
+            scatter_dim, gather_dim = 2, 1
+            split_temporal = False
+        else:
+            scatter_dim, gather_dim = 1, 2
+            split_temporal = True
+
+        x = rearrange(x, "b (t s) d -> b t s d", t=d_t, s=d_s)
+        x = all_to_all(x, get_sequence_parallel_group(), scatter_dim=scatter_dim, gather_dim=gather_dim)
+        d_s, d_t = self.get_spatial_temporal_size(self.enable_sequence_parallelism, split_temporal=split_temporal)
+        x = rearrange(x, "b t s d -> b (t s) d", t=d_t, s=d_s)
+        return x, d_s, d_t
 
 
 @MODELS.register_module()
@@ -256,12 +281,7 @@ class STDiT(nn.Module):
         # blocks
         for i, block in enumerate(self.blocks):
             if i == 0:
-                if self.enable_sequence_parallelism:
-                    tpe = torch.chunk(
-                        self.pos_embed_temporal, dist.get_world_size(get_sequence_parallel_group()), dim=1
-                    )[self.sp_rank].contiguous()
-                else:
-                    tpe = self.pos_embed_temporal
+                tpe = self.pos_embed_temporal
             else:
                 tpe = None
             x = auto_grad_checkpoint(block, x, y, t0, y_lens, tpe)
