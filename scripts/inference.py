@@ -1,16 +1,15 @@
 import os
 
+import deepspeed
 import torch
-import colossalai
 import torch.distributed as dist
 from mmengine.runner import set_random_seed
 
+from opensora.acceleration.parallel_manager import set_parallel_manager
 from opensora.datasets import save_sample
 from opensora.registry import MODELS, SCHEDULERS, build_module
 from opensora.utils.config_utils import parse_configs
 from opensora.utils.misc import to_torch_dtype
-from opensora.acceleration.parallel_states import set_sequence_parallel_group
-from colossalai.cluster import DistCoordinator
 
 
 def load_prompts(prompt_path):
@@ -27,11 +26,10 @@ def main():
     print(cfg)
 
     # init distributed
-    colossalai.launch_from_torch({})
-    coordinator = DistCoordinator()
+    deepspeed.init_distributed()
 
-    if coordinator.world_size > 1:
-        set_sequence_parallel_group(dist.group.WORLD) 
+    if dist.get_world_size() > 1:
+        set_parallel_manager(dist.get_world_size())
         enable_sequence_parallelism = True
     else:
         enable_sequence_parallelism = False
@@ -100,7 +98,7 @@ def main():
         )
         samples = vae.decode(samples.to(dtype))
 
-        if coordinator.is_master():
+        if dist.get_rank() == 0:
             for idx, sample in enumerate(samples):
                 print(f"Prompt: {batch_prompts[idx]}")
                 save_path = os.path.join(save_dir, f"sample_{sample_idx}")
