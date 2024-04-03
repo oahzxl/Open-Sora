@@ -73,7 +73,6 @@ def main():
     # ======================================================
     dataset = DatasetFromCSV(
         cfg.data_path,
-        # TODO: change transforms
         transform=(
             get_transforms_video(cfg.image_size[0])
             if not cfg.use_image_transform
@@ -84,7 +83,6 @@ def main():
         root=cfg.root,
     )
 
-    # TODO: use plugin's prepare dataloader
     # a batch contains:
     # {
     #      "video": torch.Tensor,  # [B, C, T, H, W],
