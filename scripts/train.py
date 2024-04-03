@@ -1,13 +1,14 @@
 import os
 
+
 os.environ["TOKENIZERS_PARALLELISM"] = "false"  # disable tokenizers warning
 
 from copy import deepcopy
-
-import deepspeed
 import torch
 import torch.distributed as dist
+import deepspeed
 import wandb
+from deepspeed.comm import get_local_rank
 from deepspeed.accelerator import get_accelerator
 from tqdm import tqdm
 
@@ -43,6 +44,7 @@ def main():
     assert torch.cuda.is_available(), "Training currently requires at least one GPU."
     assert cfg.dtype in ["fp16", "bf16"], f"Unknown mixed precision {cfg.dtype}"
     deepspeed.init_distributed()
+    torch.cuda.set_device(get_local_rank())
     exp_name, exp_dir = create_experiment_workspace(cfg)
     save_training_config(cfg._cfg_dict, exp_dir)
 
@@ -109,7 +111,7 @@ def main():
     input_size = (cfg.num_frames, *cfg.image_size)
     vae = build_module(cfg.vae, MODELS)
     latent_size = vae.get_latent_size(input_size)
-    text_encoder = build_module(cfg.text_encoder, MODELS, device=device)  # T5 must be fp32
+    text_encoder = build_module(cfg.text_encoder, MODELS, device=device)
     model = build_module(
         cfg.model,
         MODELS,

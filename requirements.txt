@@ -1,4 +1,4 @@
-colossalai
+deepspeed
 accelerate
 diffusers
 ftfy

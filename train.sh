@@ -1,0 +1,1 @@
+deepspeed scripts/train.py configs/opensora/train/16x256x256.py --data-path ./videos/demo.csv
