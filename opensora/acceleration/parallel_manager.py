@@ -1,29 +1,29 @@
 import torch.distributed as dist
 from torch.distributed import ProcessGroup
-from torch.distributed.device_mesh import init_device_mesh
+
+from .process_group_mesh import ProcessGroupMesh
 
 PARALLEL_MANAGER = None
 
 
-class ParallelManager:
-    def __init__(self, sp_size):
-        self.sp_size = sp_size
-        assert (
-            dist.get_world_size() % sp_size == 0
-        ), f"world size {dist.get_world_size()} must be divisible by sp_size {sp_size}"
-        self.dp_size = dist.get_world_size() // self.sp_size
-        self.device_mesh = init_device_mesh("cuda", (self.dp_size, self.sp_size), mesh_dim_names=("dp", "sp"))
-
-        self.dp_group: ProcessGroup = self.device_mesh.get_group(mesh_dim="dp")
+class ParallelManager(ProcessGroupMesh):
+    def __init__(self, dp_size, sp_size, dp_axis=0, sp_axis=1):
+        super().__init__(dp_size, sp_size)
+        self.dp_axis = dp_axis
+        self.dp_group: ProcessGroup = self.get_group_along_axis(self.dp_axis)
         self.dp_rank = dist.get_rank(self.dp_group)
 
-        self.sp_group: ProcessGroup = self.device_mesh.get_group(mesh_dim="sp")
+        self.sp_size = sp_size
+        self.sp_axis = sp_axis
+        self.sp_group: ProcessGroup = self.get_group_along_axis(self.sp_axis)
         self.sp_rank = dist.get_rank(self.sp_group)
 
 
 def set_parallel_manager(sp_size):
     global PARALLEL_MANAGER
-    PARALLEL_MANAGER = ParallelManager(sp_size)
+    assert dist.get_world_size() % sp_size == 0, "world size must be divisible by sp_size"
+    dp_size = dist.get_world_size() // sp_size
+    PARALLEL_MANAGER = ParallelManager(dp_size, sp_size)
 
 
 def get_data_parallel_group():
