@@ -15,7 +15,7 @@ from opensora.acceleration.checkpoint import set_grad_checkpoint
 from opensora.acceleration.parallel_states import get_data_parallel_group, set_data_parallel_group
 from opensora.datasets import DatasetFromCSV, get_transforms_image, get_transforms_video, prepare_dataloader
 from opensora.registry import MODELS, SCHEDULERS, build_module
-from opensora.utils.ckpt_utils import create_logger, model_sharding
+from opensora.utils.ckpt_utils import create_logger, load, model_sharding, record_model_param_shape, save
 from opensora.utils.config_utils import (
     create_experiment_workspace,
     create_tensorboard_writer,
@@ -36,8 +36,6 @@ def main():
     # ======================================================
     cfg = parse_configs(training=True)
     print(cfg)
-    exp_name, exp_dir = create_experiment_workspace(cfg)
-    save_training_config(cfg._cfg_dict, exp_dir)
 
     # ======================================================
     # 2. runtime variables & colossalai launch
@@ -45,6 +43,8 @@ def main():
     assert torch.cuda.is_available(), "Training currently requires at least one GPU."
     assert cfg.dtype in ["fp16", "bf16"], f"Unknown mixed precision {cfg.dtype}"
     deepspeed.init_distributed()
+    exp_name, exp_dir = create_experiment_workspace(cfg)
+    save_training_config(cfg._cfg_dict, exp_dir)
 
     # 2.1. colossalai init distributed training
     device = (
@@ -129,6 +129,7 @@ def main():
     # 4.2. create ema
     ema = deepcopy(model).to(torch.float32).to(device)
     requires_grad(ema, False)
+    ema_shape_dict = record_model_param_shape(ema)
 
     # 4.3. move to device
     vae = vae.to(device, dtype)
@@ -179,10 +180,9 @@ def main():
         },
         "zero_optimization": {
             "stage": 2,
-            "allgather_partitions": True,
             "reduce_scatter": True,
-            "allgather_bucket_size": 50000000,
-            "reduce_bucket_size": 50000000,
+            "allgather_bucket_size": 5e8,
+            "reduce_bucket_size": 5e8,
             "overlap_comm": True,
             "contiguous_gradients": True,
         },
@@ -203,7 +203,7 @@ def main():
     # 6.1. resume training
     if cfg.load is not None:
         logger.info("Loading checkpoint")
-        start_epoch, start_step, sampler_start_idx = None
+        start_epoch, start_step, sampler_start_idx = load(model, ema, cfg.load)
         logger.info(f"Loaded checkpoint {cfg.load} at epoch {start_epoch} step {start_step}")
     logger.info(f"Training for {cfg.epochs} epochs with {num_steps_per_epoch} steps per epoch")
 
@@ -273,6 +273,16 @@ def main():
 
                 # Save checkpoint
                 if cfg.ckpt_every > 0 and (global_step + 1) % cfg.ckpt_every == 0:
+                    save(
+                        model,
+                        ema,
+                        epoch,
+                        step + 1,
+                        global_step + 1,
+                        cfg.batch_size,
+                        exp_dir,
+                        ema_shape_dict,
+                    )
                     logger.info(
                         f"Saved checkpoint at epoch {epoch} step {step + 1} global_step {global_step + 1} to {exp_dir}"
                     )

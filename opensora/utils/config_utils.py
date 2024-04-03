@@ -3,6 +3,7 @@ import json
 import os
 from glob import glob
 
+import torch.distributed as dist
 from mmengine.config import Config
 from torch.utils.tensorboard import SummaryWriter
 
@@ -77,6 +78,7 @@ def create_experiment_workspace(cfg):
     """
     # Make outputs folder (holds all experiment subfolders)
     os.makedirs(cfg.outputs, exist_ok=True)
+    dist.barrier()
     experiment_index = len(glob(f"{cfg.outputs}/*"))
 
     # Create an experiment folder
