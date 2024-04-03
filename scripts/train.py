@@ -44,16 +44,12 @@ def main():
     assert torch.cuda.is_available(), "Training currently requires at least one GPU."
     assert cfg.dtype in ["fp16", "bf16"], f"Unknown mixed precision {cfg.dtype}"
     deepspeed.init_distributed()
-    torch.cuda.set_device(get_local_rank())
+    torch.cuda.set_device(cfg.local_rank)
     exp_name, exp_dir = create_experiment_workspace(cfg)
     save_training_config(cfg._cfg_dict, exp_dir)
 
     # 2.1. colossalai init distributed training
-    device = (
-        torch.device(get_accelerator().device_name(), cfg.local_rank)
-        if (cfg.local_rank > -1) and get_accelerator().is_available()
-        else torch.device("cpu")
-    )
+    device = torch.device(get_accelerator().device_name(), cfg.local_rank)
     dtype = to_torch_dtype(cfg.dtype)
 
     # 2.2. init logger, tensorboard & wandb
