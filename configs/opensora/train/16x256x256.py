@@ -4,7 +4,7 @@ image_size = (256, 256)
 
 # Define dataset
 root = None
-data_path = "CSV_PATH"
+data_path = "./videos"
 use_image_transform = False
 num_workers = 4
 
@@ -19,7 +19,7 @@ model = dict(
     type="STDiT-XL/2",
     space_scale=0.5,
     time_scale=1.0,
-    from_pretrained="PixArt-XL-2-512x512.pth",
+    from_pretrained=None,
     enable_flashattn=True,
     enable_layernorm_kernel=True,
 )
@@ -31,7 +31,7 @@ text_encoder = dict(
     type="t5",
     from_pretrained="DeepFloyd/t5-v1_1-xxl",
     model_max_length=120,
-    shardformer=True,
+    dtype="bf16",
 )
 scheduler = dict(
     type="iddpm",
@@ -44,10 +44,10 @@ outputs = "outputs"
 wandb = False
 
 epochs = 1000
-log_every = 10
-ckpt_every = 1000
+log_every = 1
+ckpt_every = 10
 load = None
 
-batch_size = 8
+batch_size = 1
 lr = 2e-5
 grad_clip = 1.0

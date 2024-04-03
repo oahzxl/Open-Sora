@@ -32,7 +32,7 @@ from bs4 import BeautifulSoup
 from transformers import AutoTokenizer, T5EncoderModel
 
 from opensora.registry import MODELS
-from opensora.utils.misc import requires_grad
+from opensora.utils.misc import requires_grad, to_torch_dtype
 
 
 class T5Embedder:
@@ -267,7 +267,7 @@ class T5Encoder:
         cache_dir=None,
     ):
         assert from_pretrained is not None, "Please specify the path to the T5 model"
-
+        dtype = to_torch_dtype(dtype) if isinstance(dtype, str) else dtype
         self.t5 = T5Embedder(
             device=device,
             torch_dtype=dtype,
