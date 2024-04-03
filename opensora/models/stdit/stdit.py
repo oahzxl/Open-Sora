@@ -8,7 +8,7 @@ from timm.models.vision_transformer import Mlp
 
 from opensora.acceleration.checkpoint import auto_grad_checkpoint
 from opensora.acceleration.communications import gather_forward_split_backward, split_forward_gather_backward
-from opensora.acceleration.parallel_states import get_sequence_parallel_group
+from opensora.acceleration.parallel_manager import get_sequence_parallel_group
 from opensora.models.layers.blocks import (
     Attention,
     CaptionEmbedder,

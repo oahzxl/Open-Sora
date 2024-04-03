@@ -8,7 +8,6 @@ from typing import Tuple
 import torch
 import torch.distributed as dist
 import torch.nn as nn
-from colossalai.checkpoint_io import GeneralCheckpointIO
 from torchvision.datasets.utils import download_url
 
 pretrained_models = {
@@ -73,11 +72,6 @@ def download_model(model_name):
         download_url(web_path, "pretrained_models", model_name)
     model = torch.load(local_path, map_location=lambda storage, loc: storage)
     return model
-
-
-def load_from_sharded_state_dict(model, ckpt_path):
-    ckpt_io = GeneralCheckpointIO()
-    ckpt_io.load_model(model, os.path.join(ckpt_path, "model"))
 
 
 def model_sharding(model: torch.nn.Module):
@@ -214,10 +208,6 @@ def load_checkpoint(model, ckpt_path, save_as_pt=True):
         print(f"Missing keys: {missing_keys}")
         print(f"Unexpected keys: {unexpected_keys}")
     elif os.path.isdir(ckpt_path):
-        load_from_sharded_state_dict(model, ckpt_path)
-        if save_as_pt:
-            save_path = os.path.join(ckpt_path, "model_ckpt.pt")
-            torch.save(model.state_dict(), save_path)
-            print(f"Model checkpoint saved to {save_path}")
+        raise NotImplementedError("Sharded checkpoint loading is not supported yet.")
     else:
         raise ValueError(f"Invalid checkpoint path: {ckpt_path}")

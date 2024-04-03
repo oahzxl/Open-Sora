@@ -23,17 +23,16 @@
 
 
 import html
-import os
 import re
 import urllib.parse as ul
 
 import ftfy
 import torch
 from bs4 import BeautifulSoup
-from huggingface_hub import hf_hub_download
 from transformers import AutoTokenizer, T5EncoderModel
 
 from opensora.registry import MODELS
+from opensora.utils.misc import requires_grad
 
 
 class T5Embedder:
@@ -266,7 +265,6 @@ class T5Encoder:
         device="cuda",
         dtype=torch.float,
         cache_dir=None,
-        shardformer=False,
     ):
         assert from_pretrained is not None, "Please specify the path to the T5 model"
 
@@ -282,29 +280,6 @@ class T5Encoder:
 
         self.model_max_length = model_max_length
         self.output_dim = self.t5.model.config.d_model
-
-        if shardformer:
-            self.shardformer_t5()
-
-    def shardformer_t5(self):
-        from colossalai.shardformer import ShardConfig, ShardFormer
-
-        from opensora.acceleration.shardformer.policy.t5_encoder import T5EncoderPolicy
-        from opensora.utils.misc import requires_grad
-
-        shard_config = ShardConfig(
-            tensor_parallel_process_group=None,
-            pipeline_stage_manager=None,
-            enable_tensor_parallelism=False,
-            enable_fused_normalization=False,
-            enable_flash_attention=False,
-            enable_jit_fused=True,
-            enable_sequence_parallelism=False,
-            enable_sequence_overlap=False,
-        )
-        shard_former = ShardFormer(shard_config=shard_config)
-        optim_model, _ = shard_former.optimize(self.t5.model, policy=T5EncoderPolicy())
-        self.t5.model = optim_model.half()
 
         # ensure the weights are frozen
         requires_grad(self.t5.model, False)
