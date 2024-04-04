@@ -78,8 +78,8 @@ def create_experiment_workspace(cfg):
     """
     # Make outputs folder (holds all experiment subfolders)
     os.makedirs(cfg.outputs, exist_ok=True)
-    dist.barrier()
     experiment_index = len(glob(f"{cfg.outputs}/*"))
+    dist.barrier()
 
     # Create an experiment folder
     model_name = cfg.model["type"].replace("/", "-")

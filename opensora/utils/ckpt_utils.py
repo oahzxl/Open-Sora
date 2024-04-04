@@ -8,6 +8,7 @@ from typing import Tuple
 import torch
 import torch.distributed as dist
 import torch.nn as nn
+from deepspeed.utils.zero_to_fp32 import get_fp32_state_dict_from_zero_checkpoint
 from torchvision.datasets.utils import download_url
 
 pretrained_models = {
@@ -202,7 +203,12 @@ def create_logger(logging_dir):
 
 
 def load_checkpoint(model, ckpt_path, save_as_pt=True):
-    if ckpt_path.endswith(".pt") or ckpt_path.endswith(".pth"):
+    if ckpt_path.endswith("model"):
+        # deepspeed ckpt
+        state_dict = get_fp32_state_dict_from_zero_checkpoint(ckpt_path)
+        print("Loading from deepspeed model checkpoint")
+        model.load_state_dict(state_dict, strict=True)
+    elif ckpt_path.endswith(".pt") or ckpt_path.endswith(".pth"):
         state_dict = find_model(ckpt_path)
         missing_keys, unexpected_keys = model.load_state_dict(state_dict, strict=False)
         print(f"Missing keys: {missing_keys}")
