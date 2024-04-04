@@ -1,14 +1,13 @@
 import os
 
-
 os.environ["TOKENIZERS_PARALLELISM"] = "false"  # disable tokenizers warning
 
 from copy import deepcopy
+
+import deepspeed
 import torch
 import torch.distributed as dist
-import deepspeed
 import wandb
-from deepspeed.comm import get_local_rank
 from deepspeed.accelerator import get_accelerator
 from tqdm import tqdm
 

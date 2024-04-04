@@ -27,6 +27,7 @@ def main():
 
     # init distributed
     deepspeed.init_distributed()
+    torch.cuda.set_device(cfg.local_rank)
 
     if dist.get_world_size() > 1:
         set_parallel_manager(dist.get_world_size())

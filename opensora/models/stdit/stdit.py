@@ -86,9 +86,10 @@ class STDiTBlock(nn.Module):
         x_m = t2i_modulate(self.norm1(x), shift_msa, scale_msa)
 
         # spatial branch
-        x_s = rearrange(x_m, "B (T S) C -> (B T) S C", T=self.d_t, S=self.d_s)
+        d_s, d_t = self.get_spatial_temporal_size(self._enable_sequence_parallelism, True)
+        x_s = rearrange(x_m, "b (t s) d -> (b t) s d", t=d_t, s=d_s)
         x_s = self.attn(x_s)
-        x_s = rearrange(x_s, "(B T) S C -> B (T S) C", T=self.d_t, S=self.d_s)
+        x_s = rearrange(x_s, "(b t) s d -> b (t s) d", t=d_t, s=d_s)
         x = x + self.drop_path(gate_msa * x_s)
 
         # temporal to spatial switch
@@ -97,11 +98,11 @@ class STDiTBlock(nn.Module):
             x, d_s, d_t = self.dynamic_switch(x, d_s, d_t, temporal_to_spatial=True)
 
         # temporal branch
-        x_t = rearrange(x, "B (T S) C -> (B S) T C", T=self.d_t, S=self.d_s)
+        x_t = rearrange(x, "b (t s) d -> (b s) t d", t=d_t, s=d_s)
         if tpe is not None:
             x_t = x_t + tpe
         x_t = self.attn_temp(x_t)
-        x_t = rearrange(x_t, "(B S) T C -> B (T S) C", T=self.d_t, S=self.d_s)
+        x_t = rearrange(x_t, "(b s) t d -> b (t s) d", t=d_t, s=d_s)
         x = x + self.drop_path(gate_msa * x_t)
 
         # spatial to temporal switch
@@ -136,7 +137,7 @@ class STDiTBlock(nn.Module):
 
         x = rearrange(x, "b (t s) d -> b t s d", t=d_t, s=d_s)
         x = all_to_all(x, get_sequence_parallel_group(), scatter_dim=scatter_dim, gather_dim=gather_dim)
-        d_s, d_t = self.get_spatial_temporal_size(self.enable_sequence_parallelism, split_temporal=split_temporal)
+        d_s, d_t = self.get_spatial_temporal_size(self._enable_sequence_parallelism, split_temporal=split_temporal)
         x = rearrange(x, "b t s d -> b (t s) d", t=d_t, s=d_s)
         return x, d_s, d_t
 
